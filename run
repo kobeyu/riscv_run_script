@@ -1,0 +1,180 @@
+#!/bin/bash
+
+GCC=/home/kobeyu/workspace/project_riscv_gnu_toolchain/RISCV_TC/bin/riscv64-unknown-elf-gcc
+CLANG=/home/kobeyu/workspace/project_llvm/llvm-project/build/bin/clang
+
+SYSROOT=/home/kobeyu/workspace/project_riscv_gnu_toolchain/RISCV_TC/riscv64-unknown-elf
+GCCTC=/home/kobeyu/workspace/project_riscv_gnu_toolchain/RISCV_TC
+
+
+SPIKE_ROOT=/home/kobeyu/workspace/project_riscv_gnu_toolchain/build_spike
+SPIKE=$SPIKE_ROOT/bin/spike
+PK=$SPIKE_ROOT/riscv64-unknown-elf/bin/pk
+
+GEM5_ROOT=/home/kobeyu/workspace/project_riscv_gnu_toolchain/gem5
+GEM5=$GEM5_ROOT/build/RISCV/gem5.opt
+SE=$GEM5_ROOT/configs/example/se.py
+
+arch=rv64gv
+
+function CheckFile()
+{
+    local f=$1
+    local fname=$(basename $f)
+
+    if [ ! -f $f ];then
+        echo "$fname does not exist! $f"
+        exit
+    fi
+}
+function Cleanup()
+{
+    local fname=$1
+
+    echo "  clean up $fname"
+
+    rm -rf $fname
+    rm -rf $fname.s
+    rm -rf $fname.ll
+
+    if $clean_only ;then
+        rm -rf $fname.c
+    fi
+
+    #gem5 dump
+    rm -rf m5out
+}
+
+
+function CompilerGcc()
+{
+    local fname=$1
+
+    echo "  gcc $fname"
+
+    CheckFile $GCC
+
+    $GCC $fname.c -march=$arch -o $fname
+    $GCC $fname.c -march=$arch -S -o $fname.s
+}
+
+
+function CompilerClang()
+{
+    local fname=$1
+
+    echo "  clang $fname"
+
+    CheckFile $CLANG
+
+    #'-mabi=' are: ilp32 ilp32d ilp32e ilp32f lp64 lp64d lp64f
+    local cflags="-target riscv64-unknown-elf -mabi=lp64d -march=$arch --sysroot=$SYSROOT --gcc-toolchain=$GCCTC"
+
+    $CLANG $cflags $fname.c -o $fname
+    $CLANG $cflags $fname.c -S -emit-llvm -o $fname.ll
+}
+
+
+function RunSpike()
+{
+    local fname=$1
+
+    echo "  run spike $fname"
+
+    CheckFile $SPIKE
+    CheckFile $PK
+
+    local config="--isa=rv64gcv --varch=vlen:1024,elen:64"
+
+    $SPIKE $config $PK $fname
+}
+
+function RunGem5()
+{
+    local fname=$1
+
+    echo "  run gem5"
+
+    CheckFile $GEM5
+    CheckFile $SE
+
+    $GEM5 -q $SE -c $fname
+}
+
+function LinkSource()
+{
+    local f=$1
+    local fname=$(basename "$f")
+
+    if [ -f $fname ]; then
+        rm -rf $fname
+    fi
+
+    ln -s $f .
+}
+
+
+# Define usage function
+usage () {
+  echo "Usage: $0 [-s source_folder] [-c]"
+  echo "  -s, --src        Path to the source file folder (default: current directory)"
+  echo "  -c, --clean_only      Clean up only, .o and .exe files in the source folder"
+  echo "  -h, --help       Display this help message"
+  exit 1
+}
+
+
+##############
+#### Main ####
+##############
+
+# Set default values for optional arguments
+src_folder=src
+clean_only=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]
+do
+    key="$1"
+
+    case $key in
+        -s|--src)
+        src_folder="$2"
+        shift # past argument
+        shift # past value
+        ;;
+        -c|--clean_only)
+        clean_only=true
+        shift # past argument
+        ;;
+        -h|--help)
+        usage
+        ;;
+        *)    # unknown option
+        echo "Unknown option: $key"
+        usage
+        ;;
+    esac
+done
+
+
+files=$(find $src_folder -type f -name "*.c")
+
+
+for f in $files;do
+
+    fname=$(basename "$f" .c)
+
+    echo "file: $fname"
+
+    LinkSource $f
+    Cleanup $fname
+
+    if ! $clean_only ;then
+        #CompilerGcc $fname
+        CompilerClang $fname
+        RunSpike $fname
+        RunGem5 $fname
+    fi
+done
+
